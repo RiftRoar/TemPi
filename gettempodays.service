@@ -1,9 +1,18 @@
 [Unit]
-Description=Get EDF TEMPO days
+Description=TemPi - Récupération des jours Tempo EDF
+After=network-online.target
+Wants=network-online.target
 
 [Service]
-ExecStart=/usr/bin/python3 /home/pi/gettempodays.py &
-Restart=always
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/TemPi
+ExecStart=/usr/bin/python3 /home/pi/TemPi/gettempodays.py
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
