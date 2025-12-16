@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
 ###############################################################################
-# TemPi
+# TemPi - Script d'installation avec systemd
+# Active le service gettempodays.service fourni dans le dépôt GitHub
 ###############################################################################
 
 set -euo pipefail
@@ -10,28 +11,11 @@ set -euo pipefail
 # CONFIGURATION PAR DÉFAUT #
 ############################
 
-# Utilisateur cible (modifiable via --user)
 TARGET_USER="pi"
-
-# Dossier d'installation du projet
-INSTALL_DIR="/home/%USER%/TemPi"
-
-# Dossier web
+INSTALL_DIR="/home/${TARGET_USER}/TemPi"
 WEB_ROOT="/var/www/html"
-
-# URL locale affichée en kiosk
-KIOSK_URL="http://localhost"
-
-# Activer ou non le mode kiosk
-ENABLE_KIOSK=true
-
-# Activer ou non Apache/PHP
-ENABLE_WEB=true
-
-# Activer ou non la tâche au démarrage
-ENABLE_AUTOSTART=true
-
-# Fichier de log global
+SERVICE_NAME="gettempodays.service"
+SYSTEMD_DIR="/etc/systemd/system"
 LOG_FILE="/var/log/tempi-install.log"
 
 ####################
@@ -47,53 +31,15 @@ error_exit() {
     exit 1
 }
 
-command_exists() {
-    command -v "$1" >/dev/null 2>&1
-}
-
-#########################
-# PARSING DES ARGUMENTS #
-#########################
-
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --user)
-            TARGET_USER="$2"; shift 2;;
-        --no-kiosk)
-            ENABLE_KIOSK=false; shift;;
-        --no-web)
-            ENABLE_WEB=false; shift;;
-        --no-autostart)
-            ENABLE_AUTOSTART=false; shift;;
-        --install-dir)
-            INSTALL_DIR="$2"; shift 2;;
-        --url)
-            KIOSK_URL="$2"; shift 2;;
-        -h|--help)
-            echo "Options disponibles :"
-            echo "  --user <nom>          Utilisateur cible (défaut: pi)"
-            echo "  --install-dir <path>  Dossier d'installation"
-            echo "  --url <url>           URL affichée en mode kiosk"
-            echo "  --no-kiosk            Désactiver le mode kiosk"
-            echo "  --no-web              Ne pas installer Apache/PHP"
-            echo "  --no-autostart        Ne pas configurer le démarrage automatique"
-            exit 0;;
-        *)
-            error_exit "Option inconnue: $1";;
-    esac
-Done
-
-INSTALL_DIR="${INSTALL_DIR//%USER%/$TARGET_USER}"
-
 ########################
 # VÉRIFICATIONS INIT. #
 ########################
 
-[[ "$EUID" -eq 0 ]] || error_exit "Le script doit être exécuté en root"
+[[ "$EUID" -eq 0 ]] || error_exit "Ce script doit être exécuté en root"
 
 id "$TARGET_USER" &>/dev/null || error_exit "L'utilisateur $TARGET_USER n'existe pas"
 
-log "Installation de TemPi pour l'utilisateur $TARGET_USER"
+log "Installation de TemPi avec systemd pour l'utilisateur $TARGET_USER"
 
 ########################
 # MISE À JOUR SYSTÈME  #
@@ -106,85 +52,61 @@ apt update -y && apt upgrade -y
 # INSTALLATION PAQUETS #
 ########################
 
-PACKAGES=(python3 python3-venv git unclutter)
-
-if $ENABLE_WEB; then
-    PACKAGES+=(apache2 php)
-fi
-
-log "Installation des dépendances: ${PACKAGES[*]}"
-apt install -y "${PACKAGES[@]}"
+log "Installation des dépendances"
+apt install -y python3 python3-requests apache2 php git
 
 ########################
 # INSTALLATION PROJET  #
 ########################
 
 if [[ ! -d "$INSTALL_DIR" ]]; then
-    log "Création du dossier $INSTALL_DIR"
-    mkdir -p "$INSTALL_DIR"
-    chown "$TARGET_USER":"$TARGET_USER" "$INSTALL_DIR"
+    log "Clonage du dépôt TemPi"
+    git clone https://github.com/RiftRoar/TemPi.git "$INSTALL_DIR"
+    chown -R "$TARGET_USER":"$TARGET_USER" "$INSTALL_DIR"
+else
+    log "Le dossier TemPi existe déjà, clonage ignoré"
 fi
 
 ########################
 # CONFIGURATION APACHE #
 ########################
 
-if $ENABLE_WEB; then
-    log "Configuration du serveur web"
-    rm -f "$WEB_ROOT/index.html"
+log "Configuration d'Apache"
+rm -f "$WEB_ROOT/index.html"
+ln -sf "$INSTALL_DIR/index.php" "$WEB_ROOT/index.php"
 
-    if [[ -f "$INSTALL_DIR/index.php" ]]; then
-        ln -sf "$INSTALL_DIR/index.php" "$WEB_ROOT/index.php"
-    else
-        log "ATTENTION: index.php introuvable dans $INSTALL_DIR"
-    fi
-
-    systemctl enable apache2
-    systemctl restart apache2
-fi
+systemctl enable apache2
+systemctl restart apache2
 
 ########################
-# LOGS UTILISATEUR     #
+# INSTALLATION SYSTEMD #
 ########################
 
-USER_LOG_DIR="/home/$TARGET_USER/logs"
-mkdir -p "$USER_LOG_DIR"
-chown "$TARGET_USER":"$TARGET_USER" "$USER_LOG_DIR"
+SERVICE_SOURCE="$INSTALL_DIR/$SERVICE_NAME"
+SERVICE_TARGET="$SYSTEMD_DIR/$SERVICE_NAME"
 
-########################
-# AUTOSTART SCRIPT    #
-########################
+[[ -f "$SERVICE_SOURCE" ]] || error_exit "Fichier $SERVICE_NAME introuvable dans le dépôt"
 
-if $ENABLE_AUTOSTART; then
-    log "Configuration du lancement automatique"
-    CRON_CMD="@reboot $INSTALL_DIR/startscript.sh > $USER_LOG_DIR/tempi.log 2>&1"
-    crontab -u "$TARGET_USER" -l 2>/dev/null | grep -v tempi || true | \
-        { cat; echo "$CRON_CMD"; } | crontab -u "$TARGET_USER" -
-fi
+log "Installation du service systemd $SERVICE_NAME"
+cp "$SERVICE_SOURCE" "$SERVICE_TARGET"
 
-########################
-# MODE KIOSK (LXDE)   #
-########################
+# Sécurité : permissions correctes
+chmod 644 "$SERVICE_TARGET"
 
-if $ENABLE_KIOSK; then
-    log "Activation du mode kiosk"
-    AUTOSTART_FILE="/etc/xdg/lxsession/LXDE-pi/autostart"
+log "Rechargement de systemd"
+systemctl daemon-reexec
+systemctl daemon-reload
 
-    cat > "$AUTOSTART_FILE" <<EOF
-@lxpanel --profile LXDE-pi
-@pcmanfm --desktop --profile LXDE-pi
-@xscreensaver -no-splash
-@xset s off
-@xset -dpms
-@xset s noblank
-@chromium-browser --kiosk --incognito --disable-translate --app=$KIOSK_URL
-@unclutter -idle 0
-EOF
-fi
+log "Activation et démarrage du service"
+systemctl enable gettempodays
+systemctl restart gettempodays
 
 ########################
 # FIN                 #
 ########################
 
 log "Installation terminée avec succès 🎉"
-log "Redémarre le système pour finaliser la configuration."
+log "Statut du service :"
+systemctl --no-pager status gettempodays || true
+
+log "Logs en temps réel : journalctl -u gettempodays -f"
